@@ -77,28 +77,33 @@ func (l *lexer) lex() {
 	}()
 	next := l.lexNextSection
 	for next != nil {
-		if l.buf.Buffered() >= SYSTEMD_LINE_MAX {
-			// systemd truncates lines longer than LINE_MAX
-			// https://bugs.freedesktop.org/show_bug.cgi?id=85308
-			// Rather than allowing this to pass silently, let's
-			// explicitly gate people from encountering this
-			line, err := l.buf.Peek(SYSTEMD_LINE_MAX)
-			if err != nil {
-				l.errchan <- err
-				return
-			}
-			if bytes.IndexAny(line, SYSTEMD_NEWLINE) == -1 {
-				l.errchan <- ErrLineTooLong
-				return
-			}
+		if err = l.checkLineLength(); err != nil {
+			l.errchan <- err
+			return
 		}
-
 		next, err = next()
 		if err != nil {
 			l.errchan <- err
 			return
 		}
 	}
+}
+
+func (l *lexer) checkLineLength() error {
+	if l.buf.Buffered() >= SYSTEMD_LINE_MAX {
+		// systemd truncates lines longer than LINE_MAX
+		// https://bugs.freedesktop.org/show_bug.cgi?id=85308
+		// Rather than allowing this to pass silently, let's
+		// explicitly gate people from encountering this
+		line, err := l.buf.Peek(SYSTEMD_LINE_MAX)
+		if err != nil {
+			return err
+		}
+		if bytes.IndexAny(line, SYSTEMD_NEWLINE) == -1 {
+			return ErrLineTooLong
+		}
+	}
+	return nil
 }
 
 type lexStep func() (lexStep, error)
@@ -220,6 +225,11 @@ func (l *lexer) lexOptionValueFunc(section, name string) lexStep {
 		var partial bytes.Buffer
 
 		for {
+			// As an option value could be indefinitely long, we
+			// need to check line length at every step of the way
+			if err := l.checkLineLength(); err != nil {
+				return nil, err
+			}
 			line, eof, err := l.toEOL()
 			if err != nil {
 				return nil, err
